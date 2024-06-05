@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HRIR Convolution Filter Example</title>
+    <style>
+        body {
+            background: #111;
+            color: #ddd;
+            font-family: Arial, sans-serif;
+        }
+
+        .controls {
+            margin: 20px 0;
+        }
+
+        .control-group {
+            margin-bottom: 10px;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>HRIR Convolution Filter Example</h1>
+    <form class="controls" target="#" onsubmit="event.preventDefault()">
+        <div class="control-group">
+            <label for="headSize">Head Size (m): </label>
+            <input type="number" id="headSize" value="0.185" step="0.005">
+        </div>
+        <div class="control-group">
+            <label for="absorption">Absorption (dB): </label>
+            <input type="number" id="absorption" value="4" step="1">
+        </div>
+        <div class="control-group">
+            <label for="angle1">Angle 1 (degrees): </label>
+            <input type="number" id="angle1" value="30" step="1">
+        </div>
+        <div class="control-group">
+            <label for="angle2">Angle 2 (degrees): </label>
+            <input type="number" id="angle2" value="-30" step="1">
+        </div>
+        <div class="control-group">
+            <label for="masterGain">Master Gain: </label>
+            <input type="number" id="masterGain" value="1" step="1">
+        </div>
+        <div class="control-group">
+            <label for="passthroughGain">Passthrough Gain: </label>
+            <input type="number" id="passthroughGain" value="0.2" step="0.1">
+        </div>
+        <button type="submit" id="applyFiltersButton" disabled>Apply Filters</button>
+    </form>
+
+    <input type="file" id="audioFile" accept="audio/*">
+    <br><br>
+    <audio id="audioElement" controls autoplay></audio>
+    <br><br>
+    <button id="togglePassthrough">Enable Passthrough</button>
+
+    <script>
+        document.getElementById('audioFile').addEventListener('change', handleFileSelect, false);
+        document.getElementById('applyFiltersButton').addEventListener('click', applyFilters, false);
+        document.getElementById('togglePassthrough').addEventListener('click', togglePassthrough, false);
+
+        let audioContext;
+        let convolverLeft;
+        let convolverRight;
+        let source;
+        let gainMasterNode;
+        let skipNode;
+        let audioElement = document.getElementById('audioElement');
+        let headSizeInput = document.getElementById('headSize');
+        let absorptionInput = document.getElementById('absorption');
+        let angle1Input = document.getElementById('angle1');
+        let angle2Input = document.getElementById('angle2');
+        let masterGainInput = document.getElementById('masterGain');
+
+        function generateHRIR(angle, headSize, absorption, sampleRate = 48000, soundSpeed = 343) {
+            const sinAngle = Math.sin(angle * Math.PI / 180);
+            const ITD = Math.abs((headSize / soundSpeed) * sinAngle);
+            const sampleDelay = Math.round(ITD * sampleRate);
+            const impulseLength = 512;
+            const h_L = new Float32Array(impulseLength).fill(0);
+            const h_R = new Float32Array(impulseLength).fill(0);
+
+            console.log(angle, sinAngle, ITD, sampleDelay);
+
+            // Calculate the ILD based on the angle and absorption factor
+            const ILD_dB = absorption * Math.abs(sinAngle);
+            const ILD_linear = Math.pow(10, -ILD_dB / 20);
+
+            if (sampleDelay > impulseLength) {
+                alert('nigse gut!');
+            }
+
+            if (sinAngle < 0) {
+                h_L[sampleDelay] = ILD_linear;
+                h_R[0] = 1;
+            } else {
+                h_L[0] = 1;
+                h_R[sampleDelay] = ILD_linear;
+            }
+
+            return { h_L, h_R };
+        }
+
+        function handleFileSelect(event) {
+            const file = event.target.files[0];
+            if (file) {
+                const url = URL.createObjectURL(file);
+                audioElement.src = url;
+                document.getElementById('applyFiltersButton').disabled = false;
+            }
+
+            applyFilters();
+        }
+
+        function togglePassthrough() {
+            if (!skipNode) {
+                return;
+            }
+
+            if (skipNode.gain.value === 0) {
+                const gain = parseFloat(document.getElementById('passthroughGain').value);
+                skipNode.gain.value = gain;
+                gainMasterNode.gain.value = 0;
+                document.getElementById('togglePassthrough').innerHTML = 'Enable HRIR';
+            } else {
+                skipNode.gain.value = 0;
+                const masterGain = parseFloat(masterGainInput.value);
+                gainMasterNode.gain.value = masterGain;
+                document.getElementById('togglePassthrough').innerHTML = 'Enable Passthrough';
+            }
+        }
+
+        function applyFilters() {
+            const headSize = parseFloat(headSizeInput.value);
+            const absorption = parseInt(absorptionInput.value);
+            const angle1 = parseInt(angle1Input.value);
+            const angle2 = parseInt(angle2Input.value);
+            const masterGain = parseFloat(masterGainInput.value);
+
+            if (!audioContext) {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                source = audioContext.createMediaElementSource(audioElement);
+
+                convolverLeft = audioContext.createConvolver();
+                convolverRight = audioContext.createConvolver();
+
+                // Split the stereo source into two mono channels
+                const splitter = audioContext.createChannelSplitter(2);
+
+                // Create gain nodes to avoid clipping
+                const gainNodeLeft = audioContext.createGain();
+                const gainNodeRight = audioContext.createGain();
+                gainNodeLeft.gain.value = 0.8;
+                gainNodeRight.gain.value = 0.8;
+
+                source.connect(splitter);
+
+                const mergerLeft = audioContext.createChannelMerger(2);
+                const mergerRight = audioContext.createChannelMerger(2);
+
+                splitter.connect(mergerLeft, 0, 0);
+                splitter.connect(mergerLeft, 0, 1);
+
+                splitter.connect(mergerRight, 1, 0);
+                splitter.connect(mergerRight, 1, 1);
+
+                mergerLeft.connect(convolverLeft);
+                mergerRight.connect(convolverRight);
+
+                convolverLeft.connect(gainNodeLeft);
+                convolverRight.connect(gainNodeRight);
+
+                gainMasterNode = audioContext.createGain();
+
+                convolverLeft.connect(gainMasterNode);
+                convolverRight.connect(gainMasterNode);
+
+                gainMasterNode.connect(audioContext.destination);
+
+                skipNode = audioContext.createGain();
+                source.connect(skipNode);
+                skipNode.gain.value = 0;
+                skipNode.connect(audioContext.destination);
+            }
+
+            gainMasterNode.gain.value = masterGain;
+
+            const hrir1 = generateHRIR(angle1, headSize, absorption, audioContext.sampleRate);
+            const hrir2 = generateHRIR(angle2, headSize, absorption, audioContext.sampleRate);
+
+            const hrirBufferLeft = audioContext.createBuffer(2, hrir1.h_L.length, audioContext.sampleRate);
+            const hrirBufferRight = audioContext.createBuffer(2, hrir2.h_L.length, audioContext.sampleRate);
+
+            hrirBufferLeft.getChannelData(0).set(hrir1.h_L);
+            hrirBufferLeft.getChannelData(1).set(hrir1.h_R);
+
+            hrirBufferRight.getChannelData(0).set(hrir2.h_L);
+            hrirBufferRight.getChannelData(1).set(hrir2.h_R);
+
+            convolverLeft.buffer = hrirBufferLeft;
+            convolverRight.buffer = hrirBufferRight;
+
+            audioElement.play();
+
+            skipNode.gain.value = 0;
+            gainMasterNode.gain.value = masterGain;
+            document.getElementById('togglePassthrough').innerHTML = 'Enable Passthrough';
+        }
+    </script>
+</body>
+
+</html>
